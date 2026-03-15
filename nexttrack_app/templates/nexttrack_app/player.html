@@ -1,0 +1,335 @@
+{% extends 'nexttrack_app/base.html' %}
+
+{% block content %}
+<script src="https://www.youtube.com/iframe_api"></script>
+
+<div class="row mt-4">
+    
+    <div class="col-md-8">
+        
+        <div id="video-container" class="bg-dark mb-3 rounded" style="height: 400px; position: relative; overflow: hidden;">
+            <div id="player" style="width: 100%; height: 100%;"></div>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-md-7">
+                <h2 id="current-title">Song Title</h2>
+                <h4 id="current-artist" class="text-success">Artist Name</h4>
+                
+                <div id="song-details" class="mt-3 text-muted small">
+                    <p class="mb-1"><strong>Album:</strong> <span id="det-album">---</span></p>
+                    <p class="mb-1"><strong>Genre:</strong> <span id="det-genre">---</span></p>
+                    <p class="mb-0">
+                        <strong>BPM:</strong> <span id="det-bpm">---</span> | 
+                        <strong>Popularity:</strong> <span id="det-pop">---</span>/100
+                    </p>
+                </div>
+            </div>
+            <div class="col-md-5 text-center">
+                <div id="dna-chart-container" style="max-width: 200px; margin: auto;">
+                    <canvas id="dnaPieChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="row border-top pt-4">
+            <div class="col-md-5 border-right">
+                <h5>Not feeling this?</h5>
+                <select id="genre-reselect" class="form-control mb-2">
+                    <option value="">Any Genre</option>
+                    {% for g in genres %}
+                        <option value="{{ g }}">{{ g }}</option>
+                    {% endfor %}
+                </select>
+                <button id="random-btn" class="btn btn-danger btn-block">Jump to Random Song</button>
+            </div>
+
+            <div class="col-md-7">
+                <h5>Discovery Mode</h5>
+                <div class="form-group mb-2">
+                    <label class="small text-muted">Filter by Genre (Optional):</label>
+                    <select id="rec-genre-select" class="form-control form-control-sm">
+                        <option value="">Any</option>
+                        {% for g in genres %}
+                            <option value="{{ g }}">{{ g }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group mb-2">
+                    <label class="small text-muted">Vibe Filter:</label>
+                    <select id="vibe-select" class="form-control form-control-sm">
+                        <option value="">Standard Similarity</option>
+                        <option value="chill">Chill Vibe</option>
+                        <option value="party">Party Vibe</option>
+                        <option value="workout">Workout Vibe</option>
+                        <option value="focus">Focus Vibe</option>
+                    </select>
+                </div>
+                <button id="get-recs-btn" class="btn btn-primary btn-block">Get Recommendations</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="p-3 bg-light rounded shadow-sm" style="min-height: 80vh;">
+            <h4 class="border-bottom pb-2">Results</h4>
+            <div id="fallback-notice" class="alert alert-info py-1 small d-none">Note: General similarity used.</div>
+            
+            <div id="sidebar-results">
+                <p class="text-muted text-center mt-5">Click "Get Recommendations" to see similar songs.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Global State
+    let currentTrack = null;
+    let dnaChart = null;
+
+    // Initial Page Load
+    document.addEventListener('DOMContentLoaded', function() {
+        loadFromURL();
+    });
+
+    // Handle Browser Back/Forward Buttons
+    window.onpopstate = function() {
+        loadFromURL();
+    };
+
+    function loadFromURL() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const trackId = urlParams.get('track_id');
+        const genre = urlParams.get('genre');
+        
+        // Check if the browser history has a saved list for this specific URL
+        if (window.history.state && window.history.state.savedTracks) {
+            // Load the song details normally
+            if (window.history.state.savedTracks)
+                fetchNewSong(genre, trackId, true, true); // Added a flag to skip clearing sidebar
+                // Immediately put the saved list back in the sidebar
+                renderSidebar(window.history.state.savedTracks);
+        } else {
+            // Standard load (as long as no stored list)
+            fetchNewSong(genre, trackId, true, false);
+        }
+    }
+
+    // Fetch Logic (Modified to handle specific track_id or random genre)
+    async function fetchNewSong(genre = '', trackId = '', isInitialLoad = false, isRestoring = false) {
+        let url = '/api/initial-track/';
+        
+        // Construct the API query
+        const params = new URLSearchParams();
+        if (trackId) params.append('track_id', trackId);
+        if (genre) params.append('genre', genre);
+        
+        if (params.toString()) {
+            url += `?${params.toString()}`;
+        }
+
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data) {
+                currentTrack = data;
+                updatePlayerUI(data);
+
+                const newUrl = window.location.pathname + '?track_id=' + data.track_id;
+
+                // Handle History State
+                if (isRestoring) {
+                    console.log("Restoring track details for sidebar history...");
+                } else if (isInitialLoad) {
+                    // First arrival: Replace the current entry (genre -> specific ID)
+                    window.history.replaceState({path: newUrl, savedTracks: null}, '', newUrl);
+                } else {
+                    // Random button click: Push a new entry
+                    window.history.pushState({path: newUrl, savedTracks: null}, '', newUrl);
+                }
+
+                // Only clear the sidebar if the system is NOT restoring from history.
+                if (!isRestoring) {
+                    document.getElementById('sidebar-results').innerHTML = 
+                        '<p class="text-muted text-center mt-5">Click "Get Recommendations" to see similar songs.</p>';
+                    document.getElementById('fallback-notice').classList.add('d-none');
+                }
+            }
+        } catch (error) {
+            console.error("Error fetching track:", error);
+        }
+    }
+
+    // UI Updates
+    function updatePlayerUI(track) {
+        document.getElementById('current-title').innerText = track.track_name;
+        document.getElementById('current-artist').innerText = track.artists;
+        document.getElementById('det-album').innerText = track.album_name || "N/A";
+        document.getElementById('det-genre').innerText = track.track_genre || "Unknown";
+        document.getElementById('det-bpm').innerText = Math.round(track.tempo);
+        document.getElementById('det-pop').innerText = track.popularity;
+
+        renderDNA(track);
+        // Trigger YouTube Search
+        if (isPlayerReady) {
+            searchAndPlayYouTube(track.track_name, track.artists);
+        }
+    }
+
+    // DNA Visualization 
+    function renderDNA(track) {
+        const ctx = document.getElementById('dnaPieChart').getContext('2d');
+        if (dnaChart) dnaChart.destroy();
+
+        dnaChart = new Chart(ctx, {
+            type: 'polarArea',
+            data: {
+                labels: ['Energy', 'Danceability', 'Acousticness', 'Valence', 'Speechiness'],
+                datasets: [{
+                    data: [track.energy, track.danceability, track.acousticness, track.valence, track.speechiness],
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.5)', 'rgba(54, 162, 235, 0.5)', 
+                        'rgba(255, 206, 86, 0.5)', 'rgba(75, 192, 192, 0.5)', 'rgba(153, 102, 255, 0.5)'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: { r: { suggestedMin: 0, suggestedMax: 1, ticks: { display: false } } },
+                plugins: { legend: { display: false } }
+            }
+        });
+    }
+
+    // Event: Randomization
+    document.getElementById('random-btn').addEventListener('click', function() {
+        const selectedGenre = document.getElementById('genre-reselect').value;
+        fetchNewSong(selectedGenre, '', false);
+    });
+
+    // Event: Recommendation Trigger
+    document.getElementById('get-recs-btn').addEventListener('click', function() {
+        if (!currentTrack || !currentTrack.track_id) return;
+
+        const vibe = document.getElementById('vibe-select').value;
+        const recGenre = document.getElementById('rec-genre-select').value;
+        
+        fetchRecommendations(currentTrack.track_id, vibe, recGenre);
+    });
+
+    async function fetchRecommendations(trackId, vibe, genre) {
+        const resultsContainer = document.getElementById('sidebar-results');
+        resultsContainer.innerHTML = '<div class="text-center mt-5"><div class="spinner-border text-primary" role="status"></div><p>Scanning DNA...</p></div>';
+
+        let url = `/api/recommendations/?track_id=${trackId}&vibe=${vibe}`;
+        if (genre) url += `&genre=${encodeURIComponent(genre)}`;
+
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            document.getElementById('fallback-notice').classList.toggle('d-none', !data.is_fallback);
+            renderSidebar(data.tracks);
+        } catch (error) {
+            resultsContainer.innerHTML = '<p class="text-danger text-center">Failed to load.</p>';
+        }
+    }
+
+    // Sidebar Rendering
+    function renderSidebar(tracks) {
+        const resultsContainer = document.getElementById('sidebar-results');
+        resultsContainer.innerHTML = '';
+
+        if (!tracks || tracks.length === 0) {
+            resultsContainer.innerHTML = '<p class="text-muted text-center mt-5">No matches found.</p>';
+            return;
+        }
+
+        // Store the current sidebar list in the browser's history entry
+        window.history.replaceState({
+            path: window.location.href,
+            savedTracks: tracks // This is the gold!
+        }, '', window.location.href);
+        // ----------------------
+
+        tracks.forEach(track => {
+            const div = document.createElement('div');
+            div.className = 'list-group-item list-group-item-action mb-2 shadow-sm rounded border-0';
+            div.style.cursor = 'pointer';
+            div.innerHTML = `
+                <h6 class="mb-1 text-truncate">${track.track_name}</h6>
+                <small class="text-success">${track.artists}</small>
+            `;
+            
+            div.onclick = () => {
+                // Change the URL so 'Back' works, then update the UI
+                const newUrl = window.location.pathname + '?track_id=' + track.track_id;
+                window.history.pushState({path: newUrl}, '', newUrl);
+                
+                currentTrack = track;
+                updatePlayerUI(track);
+                resultsContainer.innerHTML = '<p class="text-muted text-center mt-5">Click "Get Recommendations" to see similar songs.</p>';
+                document.getElementById('fallback-notice').classList.add('d-none');
+            };
+            resultsContainer.appendChild(div);
+        });
+    }
+
+
+        // YouTube Global State
+    let player;
+    let isPlayerReady = false;
+
+    // This function is automatically called by the YouTube API script
+    function onYouTubeIframeAPIReady() {
+        player = new YT.Player('player', {
+            height: '400',
+            width: '100%',
+            videoId: '', // Starts empty
+            playerVars: {
+                'autoplay': 1,
+                'modestbranding': 1,
+                'rel': 0,
+                'origin': window.location.origin
+            },
+            events: {
+                'onReady': onPlayerReady
+            }
+        });
+    }
+
+    function onPlayerReady(event) {
+        isPlayerReady = true;
+        // If a track loaded before the player was ready, play it now
+        if (currentTrack) {
+            searchAndPlayYouTube(currentTrack.track_name, currentTrack.artists);
+        }
+    }
+
+    
+    // The Search Logic
+    async function searchAndPlayYouTube(title, artist) {
+        // Try with "Official Audio" first for better quality
+        let query = encodeURIComponent(`${title} ${artist}`);
+        
+        try {
+            let response = await fetch(`/api/youtube-search/?q=${query}`);
+            let data = await response.json();
+
+            if (data.video_id) {
+                player.loadVideoById(data.video_id);
+            } else {
+                // If still nothing, display a message in the video container
+                document.getElementById('video-container').innerHTML = 
+                    `<div class="text-white text-center w-100">
+                        <p>Could not find a video for:<br><strong>${title} - ${artist}</strong></p>
+                    </div>`;
+            }
+        } catch (error) {
+            console.error("YouTube Search Error:", error);
+        }
+    }
+
+</script>
+{% endblock %}
